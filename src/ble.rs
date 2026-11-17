@@ -106,6 +106,9 @@ impl Recorder {
         if let Some(session) = self.tracker.tick(now) {
             self.save(session);
         }
+        if let Some(yesterday) = self.tracker.split_day(now) {
+            self.save(yesterday);
+        }
         let saved_today = self.saved_today_seconds(now);
         let status = live_status(&self.tracker, now, saved_today);
         let json = serde_json::to_string(&status).expect("LiveStatus serializes");
