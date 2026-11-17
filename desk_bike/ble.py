@@ -17,13 +17,14 @@ from bleak.exc import BleakError
 from desk_bike.config import Config
 from desk_bike.csc import CSC_MEASUREMENT_UUID, CSC_SERVICE_UUID, parse_measurement
 from desk_bike.session import Session, SessionTracker
-from desk_bike.store import append_session, load_last_reading, save_last_reading
+from desk_bike.live import live_status, write_status
+from desk_bike.store import append_session, load_last_reading, read_sessions, save_last_reading
 
 log = logging.getLogger(__name__)
 
 SCAN_TIMEOUT_SECONDS = 30
 CONNECT_TIMEOUT_SECONDS = 20
-TICK_SECONDS = 5
+TICK_SECONDS = 1  # also the bar's refresh rate
 RETRY_DELAY_SECONDS = 5
 
 
@@ -40,7 +41,7 @@ async def _wait_any(*events: asyncio.Event, timeout: float | None = None) -> Non
             w.cancel()
 
 
-async def run(config: Config, sessions_path: Path, sensor_state_path: Path) -> None:
+async def run(config: Config, sessions_path: Path, sensor_state_path: Path, status_path: Path) -> None:
     # The sensor's counters from the last run let the first connection count
     # revolutions made while the sensor was waking up and connecting.
     tracker = SessionTracker(last_reading=load_last_reading(sensor_state_path))
@@ -49,9 +50,20 @@ async def run(config: Config, sessions_path: Path, sensor_state_path: Path) -> N
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
 
+    today = {"day": None, "seconds": 0.0}
+
+    def saved_today_seconds(now: datetime) -> float:
+        if today["day"] != now.date():
+            today["day"] = now.date()
+            today["seconds"] = sum(s.moving_seconds for s in read_sessions(sessions_path)
+                                   if s.start.astimezone(now.tzinfo).date() == now.date())
+        return today["seconds"]
+
     def save(sessions: list[Session]) -> None:
         for s in sessions:
             append_session(sessions_path, s)
+            if s.start.astimezone().date() == today["day"]:
+                today["seconds"] += s.moving_seconds
             log.info("saved session %s: %.0f s, %d revs, %.0f rpm",
                      s.start.isoformat(timespec="seconds"), s.moving_seconds, s.revolutions, s.average_cadence)
 
@@ -69,7 +81,9 @@ async def run(config: Config, sessions_path: Path, sensor_state_path: Path) -> N
         # them when the process is killed or the PC loses power.
         saved_reading = tracker.last_reading
         while not stop.is_set():
-            save(tracker.tick(_now()))
+            now = _now()
+            save(tracker.tick(now))
+            _publish(status_path, live_status(tracker, now, saved_today_seconds(now)))
             if tracker.last_reading != saved_reading:
                 saved_reading = tracker.last_reading
                 _remember_counters(tracker, sensor_state_path)
@@ -102,6 +116,7 @@ async def run(config: Config, sessions_path: Path, sensor_state_path: Path) -> N
         ticker.cancel()
         save(tracker.close())
         _remember_counters(tracker, sensor_state_path)
+        status_path.unlink(missing_ok=True)  # hides the bar segment
         log.info("stopped")
 
 
@@ -113,3 +128,10 @@ def _remember_counters(tracker: SessionTracker, path: Path) -> None:
     except OSError as e:
         log.warning("could not save the sensor counters to %s: %s. Revolutions made before the next "
                     "connection will not be counted.", path, e)
+
+
+def _publish(path: Path, status: dict) -> None:
+    try:
+        write_status(path, status)
+    except OSError as e:
+        log.warning("could not write the live status to %s: %s. The eww bar will not update.", path, e)

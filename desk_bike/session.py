@@ -15,6 +15,7 @@ integral of cadence^2 over time instead, so watts and kJ can be recomputed
 whenever k is changed.
 """
 
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -32,6 +33,10 @@ SECONDS_PER_MINUTE = 60
 MAX_UNSEEN_REVOLUTIONS = 300
 # Cadence for unseen revolutions when the session has no measured pedaling.
 FALLBACK_CADENCE_RPM = 60.0
+# Live cadence averages the last few seconds; with no revolution for
+# STOPPED_AFTER (slower than 15 rpm) the crank counts as still.
+CADENCE_WINDOW = timedelta(seconds=5)
+STOPPED_AFTER = timedelta(seconds=4)
 
 
 @dataclass
@@ -60,6 +65,8 @@ class SessionTracker:
     _connecting: bool = True
     _current: Session | None = None
     _last_revolution_at: datetime | None = field(default=None)
+    # (received at, revolutions, seconds) of recent measured revolutions
+    _recent: deque = field(default_factory=deque)
 
     def reset_baseline(self) -> None:
         """Call after a disconnect: the next reading is compared with the last
@@ -82,6 +89,9 @@ class SessionTracker:
             cadence = revolutions * SECONDS_PER_MINUTE / seconds
             session.moving_seconds += seconds
             session.cadence_sq_seconds += cadence * cadence * seconds
+            self._recent.append((now, revolutions, seconds))
+            while now - self._recent[0][0] > CADENCE_WINDOW:
+                self._recent.popleft()
 
     def _add_unseen(self, now: datetime, revolutions: int) -> None:
         if not 0 < revolutions <= MAX_UNSEEN_REVOLUTIONS:
@@ -98,6 +108,23 @@ class SessionTracker:
         self._current.end = now
         self._last_revolution_at = now
         return self._current
+
+    def is_pedaling(self, now: datetime) -> bool:
+        return self._last_revolution_at is not None and now - self._last_revolution_at <= STOPPED_AFTER
+
+    def cadence(self, now: datetime) -> float:
+        """Cadence over the last CADENCE_WINDOW, 0 when the crank is still."""
+        if not self.is_pedaling(now):
+            return 0.0
+        recent = [(revs, secs) for at, revs, secs in self._recent if now - at <= CADENCE_WINDOW]
+        seconds = sum(secs for _, secs in recent)
+        return sum(revs for revs, _ in recent) * SECONDS_PER_MINUTE / seconds if seconds else 0.0
+
+    def open_session_seconds(self) -> float:
+        """Pedaling time of the session in progress, as it would be saved."""
+        if self._current is None:
+            return 0.0
+        return self._current.moving_seconds + _unseen_time(self._current)[0]
 
     def tick(self, now: datetime) -> list[Session]:
         """Returns the session that ended because the crank stopped, if any."""
@@ -127,15 +154,22 @@ def _unseen_revolutions(previous: CrankReading | None, reading: CrankReading) ->
     return reading.revolutions - previous.revolutions
 
 
-def _estimate_unseen_time(session: Session) -> None:
+def _unseen_time(session: Session) -> tuple[float, float]:
+    """(seconds, cadence) estimated for the session's unseen revolutions."""
     if session.unseen_revolutions == 0:
-        return
+        return 0.0, 0.0
     measured_revolutions = session.revolutions - session.unseen_revolutions
     if session.moving_seconds > 0 and measured_revolutions > 0:
         cadence = measured_revolutions * SECONDS_PER_MINUTE / session.moving_seconds
     else:
         cadence = FALLBACK_CADENCE_RPM
-    seconds = session.unseen_revolutions * SECONDS_PER_MINUTE / cadence
+    return session.unseen_revolutions * SECONDS_PER_MINUTE / cadence, cadence
+
+
+def _estimate_unseen_time(session: Session) -> None:
+    seconds, cadence = _unseen_time(session)
+    if seconds == 0:
+        return
     session.moving_seconds += seconds
     session.cadence_sq_seconds += cadence * cadence * seconds
     if session.starts_unseen:

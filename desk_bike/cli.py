@@ -5,7 +5,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from desk_bike.config import config_path, load_config, sensor_state_path, sessions_path
+from desk_bike.config import config_path, load_config, sensor_state_path, sessions_path, status_path
 from desk_bike.store import DaySummary, daily_summaries, read_sessions
 
 DEFAULT_DAYS_SHOWN = 14
@@ -45,7 +45,7 @@ def main(argv=None) -> None:
     if args.command == "run":
         from desk_bike.ble import run  # bleak is only needed for recording
         logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-        asyncio.run(run(load_config(config_path()), sessions_path(), sensor_state_path()))
+        asyncio.run(run(load_config(config_path()), sessions_path(), sensor_state_path(), status_path()))
     elif args.command == "today":
         now, days = _summaries()
         print(format_today(next((d for d in days if d.day == now.date()), None)))

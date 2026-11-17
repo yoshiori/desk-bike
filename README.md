@@ -11,6 +11,9 @@ Bike Mini) from a Bluetooth cadence sensor (CYCPLUS C3 in cadence mode).
   (saved in `~/.local/state/desk-bike/sensor.json`; the C3 restarts it at 0
   after a long sleep), and their time is estimated from the session's
   cadence. A 60 s test recorded 56 s (35 s before this).
+- While running, `$XDG_RUNTIME_DIR/desk-bike/status.json` is rewritten every
+  second for the eww bar (`{"show", "state": "pedaling"|"stopped", "cadence",
+  "session_minutes", "today_minutes"}`) and deleted on exit.
 - Power is an estimate, `k * cadence^2`, for comparing days with each other
   only. `k` is applied when reading, so changing it recomputes every session.
 

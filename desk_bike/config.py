@@ -35,6 +35,12 @@ def sensor_state_path() -> Path:
     return _xdg("XDG_STATE_HOME", ".local/state") / "desk-bike" / "sensor.json"
 
 
+def status_path() -> Path:
+    """Live status for the eww bar; tmpfs, since it changes every second."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return Path(runtime) / "desk-bike" / "status.json"
+
+
 def load_config(path: Path) -> Config:
     if not path.exists():
         return Config()
