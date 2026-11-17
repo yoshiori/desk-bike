@@ -3,6 +3,8 @@ name = "desk-bike"
 version = "0.2.0"
 edition = "2024"
 description = "Record casual pedaling on an under-desk exercise bike from a BLE cadence sensor"
+license = "MIT"
+repository = "https://github.com/yoshiori/desk-bike"
 
 [profile.release]
 strip = true
