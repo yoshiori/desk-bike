@@ -31,6 +31,10 @@ def sessions_path() -> Path:
     return _xdg("XDG_DATA_HOME", ".local/share") / "desk-bike" / "sessions.jsonl"
 
 
+def sensor_state_path() -> Path:
+    return _xdg("XDG_STATE_HOME", ".local/state") / "desk-bike" / "sensor.json"
+
+
 def load_config(path: Path) -> Config:
     if not path.exists():
         return Config()

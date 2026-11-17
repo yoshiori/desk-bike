@@ -6,6 +6,11 @@ Bike Mini) from a Bluetooth cadence sensor (CYCPLUS C3 in cadence mode).
 - A session starts with the first crank revolution and ends after 2 minutes
   without pedaling. Sessions shorter than 30 seconds of pedaling are dropped.
 - Sessions are appended to `~/.local/share/desk-bike/sessions.jsonl`.
+- The sensor only advertises once the crank turns, and connecting takes
+  ~25 s. Revolutions made meanwhile are recovered from the sensor's counter
+  (saved in `~/.local/state/desk-bike/sensor.json`; the C3 restarts it at 0
+  after a long sleep), and their time is estimated from the session's
+  cadence. A 60 s test recorded 56 s (35 s before this).
 - Power is an estimate, `k * cadence^2`, for comparing days with each other
   only. `k` is applied when reading, so changing it recomputes every session.
 

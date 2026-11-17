@@ -17,7 +17,7 @@ from bleak.exc import BleakError
 from desk_bike.config import Config
 from desk_bike.csc import CSC_MEASUREMENT_UUID, CSC_SERVICE_UUID, parse_measurement
 from desk_bike.session import Session, SessionTracker
-from desk_bike.store import append_session
+from desk_bike.store import append_session, load_last_reading, save_last_reading
 
 log = logging.getLogger(__name__)
 
@@ -40,8 +40,10 @@ async def _wait_any(*events: asyncio.Event, timeout: float | None = None) -> Non
             w.cancel()
 
 
-async def run(config: Config, sessions_path: Path) -> None:
-    tracker = SessionTracker()
+async def run(config: Config, sessions_path: Path, sensor_state_path: Path) -> None:
+    # The sensor's counters from the last run let the first connection count
+    # revolutions made while the sensor was waking up and connecting.
+    tracker = SessionTracker(last_reading=load_last_reading(sensor_state_path))
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -63,8 +65,14 @@ async def run(config: Config, sessions_path: Path) -> None:
         return name.startswith(config.sensor_name_prefix) or CSC_SERVICE_UUID in adv.service_uuids
 
     async def tick_forever() -> None:
+        # Saving the counters while connected, not only on disconnect, keeps
+        # them when the process is killed or the PC loses power.
+        saved_reading = tracker.last_reading
         while not stop.is_set():
             save(tracker.tick(_now()))
+            if tracker.last_reading != saved_reading:
+                saved_reading = tracker.last_reading
+                _remember_counters(tracker, sensor_state_path)
             await _wait_any(stop, timeout=TICK_SECONDS)
 
     ticker = asyncio.create_task(tick_forever())
@@ -83,12 +91,25 @@ async def run(config: Config, sessions_path: Path) -> None:
                     await _wait_any(disconnected, stop)
                     log.info("disconnected from %s", device.address)
             except (BleakError, TimeoutError, OSError) as e:
-                log.warning("sensor %s failed: %s. Retrying in %d s; if it keeps failing, check that "
-                            "no phone or bike computer is connected to it.", device.address, e, RETRY_DELAY_SECONDS)
+                log.warning("sensor %s failed: %s: %s. Retrying in %d s; if it keeps failing, check that "
+                            "no phone or bike computer is connected to it.",
+                            device.address, type(e).__name__, e, RETRY_DELAY_SECONDS)
                 await _wait_any(stop, timeout=RETRY_DELAY_SECONDS)
             finally:
                 tracker.reset_baseline()
+                _remember_counters(tracker, sensor_state_path)
     finally:
         ticker.cancel()
         save(tracker.close())
+        _remember_counters(tracker, sensor_state_path)
         log.info("stopped")
+
+
+def _remember_counters(tracker: SessionTracker, path: Path) -> None:
+    if tracker.last_reading is None:
+        return
+    try:
+        save_last_reading(path, tracker.last_reading)
+    except OSError as e:
+        log.warning("could not save the sensor counters to %s: %s. Revolutions made before the next "
+                    "connection will not be counted.", path, e)

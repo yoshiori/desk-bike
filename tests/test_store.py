@@ -2,8 +2,10 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
+from desk_bike.csc import CrankReading
 from desk_bike.session import Session
-from desk_bike.store import append_session, daily_summaries, read_sessions
+from desk_bike.store import (append_session, daily_summaries, load_last_reading, read_sessions,
+                              save_last_reading)
 
 TOKYO = timezone(timedelta(hours=9))
 
@@ -46,3 +48,16 @@ def test_summary_uses_the_local_date_of_the_start():
     late = session(17, 23, 30, 60)  # 23:00-23:30 JST is still the 17th locally
     days = daily_summaries([late], power_coefficient=0.015, tz=TOKYO)
     assert days[0].day == date(2026, 11, 17)
+
+
+def test_last_reading_round_trips(tmp_path):
+    path = tmp_path / "state" / "sensor.json"
+    save_last_reading(path, CrankReading(1234, 5678))
+    assert load_last_reading(path) == CrankReading(1234, 5678)
+
+
+def test_missing_or_broken_last_reading_is_none(tmp_path):
+    assert load_last_reading(tmp_path / "nope.json") is None
+    broken = tmp_path / "broken.json"
+    broken.write_text("{")
+    assert load_last_reading(broken) is None

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, tzinfo
 from pathlib import Path
 
+from desk_bike.csc import CrankReading
 from desk_bike.session import SECONDS_PER_MINUTE, Session
 
 JOULES_PER_KILOJOULE = 1000
@@ -78,3 +79,20 @@ def daily_summaries(sessions: list[Session], power_coefficient: float, tz: tzinf
         summary.moving_seconds += s.moving_seconds
         summary.joules += power_coefficient * s.cadence_sq_seconds
     return [days[d] for d in sorted(days)]
+
+
+def save_last_reading(path: Path, reading: CrankReading) -> None:
+    """Keeps the sensor's counters across restarts, so revolutions made
+    before the next connection can be counted."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"revolutions": reading.revolutions, "event_time": reading.event_time}))
+    tmp.replace(path)
+
+
+def load_last_reading(path: Path) -> CrankReading | None:
+    try:
+        record = json.loads(path.read_text())
+        return CrankReading(int(record["revolutions"]), int(record["event_time"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
