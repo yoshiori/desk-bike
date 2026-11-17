@@ -1,7 +1,9 @@
 //! Turns a stream of crank readings into pedaling sessions.
 //!
 //! A session starts at the first revolution and ends once the crank has been
-//! still for `end_after`. BLE drops in between keep the session open.
+//! still for `end_after`. BLE drops in between keep the session open. A
+//! session never spans two days: at midnight it is split, so pedaling counts
+//! for the day it was done on.
 //!
 //! Revolutions made while not connected are recovered from the sensor's
 //! cumulative counter (which the C3 restarts at 0 after a long sleep): the
@@ -16,7 +18,7 @@
 
 use std::collections::VecDeque;
 
-use chrono::{DateTime, FixedOffset, TimeDelta};
+use chrono::{DateTime, FixedOffset, NaiveTime, TimeDelta, TimeZone};
 use serde::{Deserialize, Serialize};
 
 use crate::csc::{CrankReading, EVENT_TICKS_PER_SECOND};
@@ -196,6 +198,29 @@ impl SessionTracker {
         if self.current.is_some() && still { self.close() } else { None }
     }
 
+    /// Splits the open session at local midnight, so each day keeps the
+    /// pedaling done on it. Returns the part before midnight; pedaling goes
+    /// on in a new session that starts at midnight. Call every tick: the
+    /// split happens on the first tick of the new day, so at most one tick of
+    /// pedaling lands on the wrong day.
+    pub fn split_day(&mut self, now: Time) -> Option<Session> {
+        let session = self.current.as_ref()?;
+        if session.start.with_timezone(now.offset()).date_naive() == now.date_naive() {
+            return None;
+        }
+        let midnight = now
+            .offset()
+            .from_local_datetime(&now.date_naive().and_time(NaiveTime::MIN))
+            .single()
+            .expect("a fixed offset has exactly one midnight");
+        let mut before = self.current.replace(Session::new(midnight, midnight, 0, 0.0, 0.0))?;
+        estimate_unseen_time(&mut before);
+        before.end = before.end.min(midnight);
+        // Kept even when shorter than min_moving_seconds: it is the start of
+        // a real session, not a bump of the crank.
+        (before.moving_seconds > 0.0).then_some(before)
+    }
+
     /// Ends the open session now (on shutdown).
     pub fn close(&mut self) -> Option<Session> {
         let mut session = self.current.take()?;
@@ -245,7 +270,6 @@ fn estimate_unseen_time(session: &mut Session) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     pub const TICKS_PER_SECOND: f64 = 1024.0;
 
@@ -427,6 +451,75 @@ pub(crate) mod tests {
         let mut tracker = started(60, 60.0);
         assert!(tracker.close().is_some());
         assert!(tracker.close().is_none());
+    }
+
+    fn before_midnight() -> Time {
+        FixedOffset::east_opt(9 * 3600).unwrap().with_ymd_and_hms(2026, 11, 17, 23, 59, 0).unwrap()
+    }
+
+    fn midnight() -> Time {
+        FixedOffset::east_opt(9 * 3600).unwrap().with_ymd_and_hms(2026, 11, 18, 0, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn a_session_across_midnight_is_split_into_the_two_days() {
+        let mut tracker = SessionTracker::default();
+        tracker.feed(before_midnight(), reading(0, 0));
+        let (revs, event) = pedal(&mut tracker, before_midnight(), 60, 60.0, 0, 0);
+        assert!(tracker.split_day(at(before_midnight(), 59.0)).is_none()); // still the same day
+
+        let yesterday = tracker.split_day(midnight()).expect("the part before midnight");
+        assert_eq!(yesterday.start, before_midnight());
+        assert!(yesterday.end <= midnight());
+        assert_eq!(yesterday.revolutions, 60);
+        approx(yesterday.moving_seconds, 60.0, 1.0);
+        assert_eq!(tracker.open_session_seconds(), 0.0);
+        assert!(tracker.is_pedaling(midnight())); // the bar keeps showing the cadence
+
+        pedal(&mut tracker, midnight(), 90, 60.0, revs, event);
+        let today = finish(&mut tracker, at(midnight(), 300.0));
+        assert_eq!(today.start, midnight());
+        assert_eq!(today.revolutions, 90);
+        approx(today.moving_seconds, 90.0, 1.0);
+    }
+
+    #[test]
+    fn splitting_is_done_once_per_day() {
+        let mut tracker = SessionTracker::default();
+        tracker.feed(before_midnight(), reading(0, 0));
+        pedal(&mut tracker, before_midnight(), 60, 60.0, 0, 0);
+        assert!(tracker.split_day(midnight()).is_some());
+        assert!(tracker.split_day(at(midnight(), 1.0)).is_none());
+    }
+
+    #[test]
+    fn a_short_part_before_midnight_is_kept() {
+        // The 30 s minimum is for bumps of the crank; this is the start of a
+        // real session and its time must not be lost.
+        let mut tracker = SessionTracker::default();
+        let late = at(midnight(), -10.0);
+        tracker.feed(late, reading(0, 0));
+        pedal(&mut tracker, late, 10, 60.0, 0, 0);
+        let yesterday = tracker.split_day(midnight()).expect("the part before midnight");
+        approx(yesterday.moving_seconds, 10.0, 1.0);
+    }
+
+    #[test]
+    fn nothing_to_split_without_an_open_session() {
+        let mut tracker = SessionTracker::default();
+        assert!(tracker.split_day(midnight()).is_none());
+    }
+
+    #[test]
+    fn a_stopped_session_left_open_over_midnight_is_dropped_after_midnight() {
+        // Pedaling ended at 23:59:30; the session closes 2 minutes later. The
+        // empty part after midnight must not become a session of its own.
+        let mut tracker = SessionTracker::default();
+        let late = at(midnight(), -90.0);
+        tracker.feed(late, reading(0, 0));
+        pedal(&mut tracker, late, 60, 60.0, 0, 0);
+        assert!(tracker.split_day(midnight()).is_some());
+        assert!(tracker.tick(at(midnight(), 120.0)).is_none());
     }
 
     #[test]
