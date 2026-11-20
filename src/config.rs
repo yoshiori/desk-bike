@@ -1,6 +1,7 @@
 //! User settings in ~/.config/desk-bike/config.toml (optional) and file paths.
 
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -51,8 +52,18 @@ pub fn config_path() -> PathBuf {
     xdg("XDG_CONFIG_HOME", ".config").join("desk-bike/config.toml")
 }
 
+/// Shared home for personal health records, read by other tools and agents:
+/// $HEALTH_DATA_DIR, else $XDG_DATA_HOME/health, else ~/.local/share/health.
+fn health_data_dir_from(health: Option<OsString>, xdg_data: Option<OsString>, home: PathBuf) -> PathBuf {
+    let non_empty = |v: Option<OsString>| v.filter(|v| !v.is_empty()).map(PathBuf::from);
+    non_empty(health)
+        .or_else(|| non_empty(xdg_data).map(|d| d.join("health")))
+        .unwrap_or_else(|| home.join(".local/share/health"))
+}
+
 pub fn sessions_path() -> PathBuf {
-    xdg("XDG_DATA_HOME", ".local/share").join("desk-bike/sessions.jsonl")
+    health_data_dir_from(env::var_os("HEALTH_DATA_DIR"), env::var_os("XDG_DATA_HOME"), home())
+        .join("desk-bike/sessions.jsonl")
 }
 
 pub fn sensor_state_path() -> PathBuf {
@@ -95,6 +106,24 @@ mod tests {
         let path = dir.path().join("config.toml");
         fs::write(&path, "power_coefficient = 0.02\n").unwrap();
         assert_eq!(load_config(&path).unwrap().sensor_name_prefix, DEFAULT_SENSOR_NAME_PREFIX);
+    }
+
+    #[test]
+    fn health_dir_prefers_health_data_dir() {
+        let dir = health_data_dir_from(Some("/h".into()), Some("/x".into()), PathBuf::from("/home/u"));
+        assert_eq!(dir, PathBuf::from("/h"));
+    }
+
+    #[test]
+    fn health_dir_falls_back_to_xdg_data_home() {
+        let dir = health_data_dir_from(None, Some("/x".into()), PathBuf::from("/home/u"));
+        assert_eq!(dir, PathBuf::from("/x/health"));
+    }
+
+    #[test]
+    fn health_dir_defaults_under_home_and_ignores_empty_values() {
+        let dir = health_data_dir_from(Some("".into()), Some("".into()), PathBuf::from("/home/u"));
+        assert_eq!(dir, PathBuf::from("/home/u/.local/share/health"));
     }
 
     #[test]

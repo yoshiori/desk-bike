@@ -15,7 +15,9 @@ Cadence service (0x1816) with crank data should work.
 
 - A session starts with the first crank revolution and ends after 2 minutes
   without pedaling. Sessions shorter than 30 seconds of pedaling are dropped.
-- Sessions are appended to `~/.local/share/desk-bike/sessions.jsonl`, one JSON
+- Sessions are appended to `~/.local/share/health/desk-bike/sessions.jsonl`
+  (the shared health data directory; override the root with `HEALTH_DATA_DIR`),
+  one JSON
   object per line:
 
   ```json
